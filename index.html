@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Three.js Hourglass Sand</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: radial-gradient(1200px 800px at 50% 30%, #1f2340 0%, #0f111a 60%, #0a0b12 100%);
+        color: #e8e8f0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+      }
+      .overlay {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        background: rgba(0,0,0,0.35);
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-size: 12px;
+        line-height: 1.4;
+        user-select: none;
+        pointer-events: none;
+      }
+      a { color: #7acfff; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div class="overlay">
+      Hourglass with particle sand (Three.js)<br/>
+      - Drag to orbit, scroll to zoom<br/>
+      - Press <strong>F</strong> to flip the hourglass
+    </div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
