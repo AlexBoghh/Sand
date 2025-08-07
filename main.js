@@ -1,5 +1,6 @@
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+import { GPUComputationRenderer } from 'https://unpkg.com/three@0.160.0/examples/jsm/misc/GPUComputationRenderer.js';
 
 // Scene setup
 const root = document.getElementById('app');
@@ -88,7 +89,7 @@ function innerRadiusAtY(y) {
   const glass = new THREE.Mesh(latheGeo, glassMat);
   scene.add(glass);
 
-  // Wooden or metal stand
+  // Stand rings
   const ringMat = new THREE.MeshStandardMaterial({ color: 0x5a4636, roughness: 0.7, metalness: 0.1 });
   const ringGeo = new THREE.TorusGeometry(BULB_RADIUS + GLASS_THICKNESS * 1.2, 0.03, 12, 64);
   const ringTop = new THREE.Mesh(ringGeo, ringMat);
@@ -99,33 +100,43 @@ function innerRadiusAtY(y) {
   scene.add(ringBottom);
 })();
 
-// Particle-based sand
-const NUM_PARTICLES = 14000; // Adjust for performance
-const GRAVITY = 5.5;         // Gravity acceleration
-const TIME_STEP = 1 / 60;    // Fixed timestep
+// ------------------------------
+// GPGPU Particle Simulation
+// ------------------------------
+
+// Change these to scale particle count (width * height)
+const TEXTURE_WIDTH = 256;
+const TEXTURE_HEIGHT = 256;
+const NUM_PARTICLES = TEXTURE_WIDTH * TEXTURE_HEIGHT;
+
+// Physics constants
+const GRAVITY = 6.0;
 const LINEAR_DAMPING = 0.995;
+const VISCOSITY = 0.0025;
 const WALL_RESTITUTION = 0.4;
 const FLOOR_BOUNCE = 0.25;
-const VISCOSITY = 0.0025;    // Mild velocity damping to calm jitter
-const SETTLE_SPEED = 0.08;   // Max speed to allow settling
-const SETTLE_Y_EPS = 0.012;  // How close to the bottom to settle
+const FUNNEL_EXTRA_G = 22.0;
+const FUNNEL_CENTERING = 8.0;
 
-const FUNNEL_EXTRA_G = 22.0;     // Extra downward accel inside neck region
-const FUNNEL_CENTERING = 8.0;    // Pull towards centerline in neck
+// GPUComputation setup
+const gpu = new GPUComputationRenderer(TEXTURE_WIDTH, TEXTURE_HEIGHT, renderer);
 
-// Geometry and material for points
-const sandGeometry = new THREE.BufferGeometry();
-const positions = new Float32Array(NUM_PARTICLES * 3);
-const velocities = new Float32Array(NUM_PARTICLES * 3);
-const settled = new Uint8Array(NUM_PARTICLES); // 0=free, 1=settled bottom
+// Helper: create initial textures
+const dtPosition = gpu.createTexture();
+const dtVelocity = gpu.createTexture();
 
-// Helper to sample a random point inside the top bulb volume
+function randNormal() {
+  // Box-Muller for slight spread
+  const u = Math.random();
+  const v = Math.random();
+  return Math.sqrt(-2.0 * Math.log(u + 1e-6)) * Math.cos(2.0 * Math.PI * v);
+}
+
 function samplePointInTopBulb() {
-  // Rejection sampling using cylindrical coordinates limited by innerRadiusAtY(y)
-  for (let attempts = 0; attempts < 50; attempts++) {
-    const y = THREE.MathUtils.lerp(0.12, HALF_HEIGHT - 0.04, Math.random());
+  for (let attempts = 0; attempts < 64; attempts++) {
+    const y = THREE.MathUtils.lerp(0.12, HALF_HEIGHT - 0.05, Math.random());
     const rMax = innerRadiusAtY(y) * 0.98;
-    const rr = Math.sqrt(Math.random()) * rMax; // Prefer center slightly
+    const rr = Math.sqrt(Math.random()) * rMax;
     const ang = Math.random() * Math.PI * 2;
     const x = rr * Math.cos(ang);
     const z = rr * Math.sin(ang);
@@ -134,167 +145,212 @@ function samplePointInTopBulb() {
   return new THREE.Vector3(0, HALF_HEIGHT * 0.6, 0);
 }
 
-// Initialize particles in the top chamber
-for (let i = 0; i < NUM_PARTICLES; i++) {
-  const p = samplePointInTopBulb();
-  positions[3 * i + 0] = p.x;
-  positions[3 * i + 1] = p.y;
-  positions[3 * i + 2] = p.z;
+// Fill initial textures
+{
+  const posArray = dtPosition.image.data; // Float32Array RGBA
+  const velArray = dtVelocity.image.data;
+  let ptr = 0;
+  for (let j = 0; j < TEXTURE_HEIGHT; j++) {
+    for (let i = 0; i < TEXTURE_WIDTH; i++) {
+      const p = samplePointInTopBulb();
+      posArray[ptr + 0] = p.x;
+      posArray[ptr + 1] = p.y;
+      posArray[ptr + 2] = p.z;
+      posArray[ptr + 3] = 1.0;
 
-  // Initial small random jiggle helps separate particles
-  velocities[3 * i + 0] = (Math.random() - 0.5) * 0.02;
-  velocities[3 * i + 1] = (Math.random() - 0.5) * 0.02;
-  velocities[3 * i + 2] = (Math.random() - 0.5) * 0.02;
+      // tiny jitter
+      velArray[ptr + 0] = randNormal() * 0.02;
+      velArray[ptr + 1] = randNormal() * 0.02;
+      velArray[ptr + 2] = randNormal() * 0.02;
+      velArray[ptr + 3] = 0.0;
+
+      ptr += 4;
+    }
+  }
 }
 
-sandGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+// Shaders
+const commonDefs = /* glsl */`
+  float innerRadiusAtY(float y) {
+    float t = clamp(abs(y) / ${HALF_HEIGHT.toFixed(6)}, 0.0, 1.0);
+    float curve = pow(t, ${SHAPE_POWER.toFixed(6)});
+    return ${NECK_RADIUS.toFixed(6)} + (${BULB_RADIUS.toFixed(6)} - ${NECK_RADIUS.toFixed(6)}) * curve;
+  }
+`;
 
-const sandMaterial = new THREE.PointsMaterial({
-  color: 0xf3d7a5,
-  size: 0.02,
-  sizeAttenuation: true,
-  transparent: true,
-  opacity: 0.95,
-  depthWrite: false,
-});
+const velocityFragmentShader = /* glsl */`
+  uniform sampler2D texturePosition;
+  uniform sampler2D textureVelocity;
+  uniform float uDelta;
+  uniform float uGravitySign;
 
-const sandPoints = new THREE.Points(sandGeometry, sandMaterial);
-scene.add(sandPoints);
+  ${commonDefs}
 
-// Optional: a simple conical sand pile visual aid that grows with settled particles
-const coneMaxHeight = 0.9;
-const coneGeo = new THREE.ConeGeometry(0.001, 0.001, 48, 1, true);
-const coneMat = new THREE.MeshStandardMaterial({ color: 0xd9c08d, roughness: 0.8, metalness: 0.0, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
-const sandPile = new THREE.Mesh(coneGeo, coneMat);
- sandPile.position.y = -HALF_HEIGHT;
- sandPile.rotation.x = 0;
- scene.add(sandPile);
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    vec3 pos = texture2D(texturePosition, uv).xyz;
+    vec3 vel = texture2D(textureVelocity, uv).xyz;
 
-function updateConePile(showFraction) {
-  const radius = BULB_RADIUS * 0.92 * Math.pow(showFraction, 0.42);
-  const height = coneMaxHeight * Math.pow(showFraction, 0.62);
-  sandPile.geometry.dispose();
-  sandPile.geometry = new THREE.ConeGeometry(Math.max(0.001, radius), Math.max(0.001, height), 64, 1, true);
-  sandPile.position.y = -HALF_HEIGHT + height * 0.5;
-}
+    // Gravity
+    vel.y += -${GRAVITY.toFixed(6)} * uGravitySign * uDelta;
 
-// Physics integration and constraints
-function stepPhysics(dt) {
-  const neckYMin = -NECK_HALF_HEIGHT;
-  const neckYMax = +NECK_HALF_HEIGHT;
+    // Linear damping and mild viscosity
+    vel *= ${LINEAR_DAMPING.toFixed(6)};
+    vel -= vel * ${VISCOSITY.toFixed(6)};
 
-  let settledCount = 0;
-
-  for (let i = 0; i < NUM_PARTICLES; i++) {
-    if (settled[i] === 1) { settledCount++; continue; }
-
-    const ix = 3 * i;
-    let px = positions[ix + 0];
-    let py = positions[ix + 1];
-    let pz = positions[ix + 2];
-
-    let vx = velocities[ix + 0];
-    let vy = velocities[ix + 1];
-    let vz = velocities[ix + 2];
-
-    // Gravity and damping
-    vy -= GRAVITY * dt;
-
-    vx *= LINEAR_DAMPING;
-    vy *= LINEAR_DAMPING;
-    vz *= LINEAR_DAMPING;
-
-    // Mild viscosity
-    vx -= vx * VISCOSITY;
-    vy -= vy * VISCOSITY * 0.5;
-    vz -= vz * VISCOSITY;
-
-    // Neck funnel extra acceleration and centering
-    if (py > neckYMin && py < neckYMax) {
-      const rAtY = innerRadiusAtY(py);
-      const rLen = Math.hypot(px, pz);
+    // Funnel acceleration and centering in neck region
+    if (pos.y > -${NECK_HALF_HEIGHT.toFixed(6)} && pos.y < ${NECK_HALF_HEIGHT.toFixed(6)}) {
+      float rAtY = innerRadiusAtY(pos.y);
+      float rLen = length(pos.xz);
       if (rLen < rAtY * 0.9) {
-        vy -= FUNNEL_EXTRA_G * dt;
-        // Pull to center, scaled with radius
-        vx += (-px) * FUNNEL_CENTERING * dt / (rAtY + 1e-3);
-        vz += (-pz) * FUNNEL_CENTERING * dt / (rAtY + 1e-3);
+        vel.y += -${FUNNEL_EXTRA_G.toFixed(6)} * uGravitySign * uDelta;
+        if (rLen > 1e-6) {
+          vec2 n = -pos.xz / rAtY; // towards center
+          vel.xz += n * ${FUNNEL_CENTERING.toFixed(6)} * uDelta;
+        }
       }
     }
+
+    // Collide with inner boundary (approx using current pos)
+    float rY = innerRadiusAtY(pos.y) - 0.006;
+    float radialLen = length(pos.xz);
+    if (radialLen > rY && radialLen > 1e-6) {
+      vec2 nxz = pos.xz / radialLen;
+      float vDotN = dot(vel.xz, nxz);
+      if (vDotN > 0.0) {
+        vel.xz -= (1.0 + ${WALL_RESTITUTION.toFixed(6)}) * vDotN * nxz;
+        vel.xz *= 0.96;
+      }
+    }
+
+    // Cap collisions
+    if (pos.y > ${HALF_HEIGHT.toFixed(6)} && vel.y > 0.0) {
+      vel.y = -vel.y * ${FLOOR_BOUNCE.toFixed(6)};
+      vel.xz *= 0.96;
+    }
+    if (pos.y < -${HALF_HEIGHT.toFixed(6)} && vel.y < 0.0) {
+      vel.y = -vel.y * ${FLOOR_BOUNCE.toFixed(6)};
+      vel.xz *= 0.95;
+    }
+
+    gl_FragColor = vec4(vel, 1.0);
+  }
+`;
+
+const positionFragmentShader = /* glsl */`
+  uniform sampler2D texturePosition;
+  uniform sampler2D textureVelocity;
+  uniform float uDelta;
+
+  ${commonDefs}
+
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    vec3 pos = texture2D(texturePosition, uv).xyz;
+    vec3 vel = texture2D(textureVelocity, uv).xyz;
 
     // Integrate
-    px += vx * dt;
-    py += vy * dt;
-    pz += vz * dt;
+    pos += vel * uDelta;
 
-    // Collide with inner boundary (hourglass wall)
-    const rY = innerRadiusAtY(py) - 0.006; // small margin inside glass
-    const radialLen = Math.hypot(px, pz);
-    if (radialLen > rY) {
-      // Project back to boundary and reflect velocity
-      const nx = px / (radialLen + 1e-6);
-      const nz = pz / (radialLen + 1e-6);
-      const over = radialLen - rY;
-      px -= nx * over;
-      pz -= nz * over;
-      // Split velocity into normal/tangent
-      const vDotN = vx * nx + vz * nz;
-      vx -= (1 + WALL_RESTITUTION) * vDotN * nx;
-      vz -= (1 + WALL_RESTITUTION) * vDotN * nz;
-      // add some friction
-      vx *= 0.96;
-      vz *= 0.96;
+    // Project back inside boundary in case of drift
+    float rY = innerRadiusAtY(pos.y) - 0.006;
+    float radialLen = length(pos.xz);
+    if (radialLen > rY && radialLen > 1e-6) {
+      vec2 nxz = pos.xz / radialLen;
+      float over = radialLen - rY;
+      pos.xz -= nxz * over;
     }
 
-    // Cap collisions top and bottom
-    if (py > HALF_HEIGHT) {
-      py = HALF_HEIGHT;
-      vy = -vy * FLOOR_BOUNCE;
-      vx *= 0.96; vz *= 0.96;
-    }
+    // Clamp top/bottom
+    pos.y = clamp(pos.y, -${HALF_HEIGHT.toFixed(6)}, ${HALF_HEIGHT.toFixed(6)});
 
-    if (py < -HALF_HEIGHT) {
-      py = -HALF_HEIGHT;
-      vy = -vy * FLOOR_BOUNCE;
-      vx *= 0.95; vz *= 0.95;
-    }
-
-    // Settle conditions at bottom
-    if (py <= -HALF_HEIGHT + SETTLE_Y_EPS && Math.abs(vy) < SETTLE_SPEED) {
-      const rBottom = innerRadiusAtY(-HALF_HEIGHT + 1e-3) - 0.01;
-      const rLen2 = Math.hypot(px, pz);
-      if (rLen2 < rBottom) {
-        py = -HALF_HEIGHT + 0.001 + (Math.random() * 0.003);
-        vx = 0; vy = 0; vz = 0;
-        settled[i] = 1;
-        settledCount++;
-      }
-    }
-
-    // Write back
-    positions[ix + 0] = px;
-    positions[ix + 1] = py;
-    positions[ix + 2] = pz;
-
-    velocities[ix + 0] = vx;
-    velocities[ix + 1] = vy;
-    velocities[ix + 2] = vz;
+    gl_FragColor = vec4(pos, 1.0);
   }
+`;
 
-  // Update sand pile visualization
-  const frac = settledCount / NUM_PARTICLES;
-  updateConePile(frac);
+// Create variables
+const velVar = gpu.addVariable('textureVelocity', velocityFragmentShader, dtVelocity);
+const posVar = gpu.addVariable('texturePosition', positionFragmentShader, dtPosition);
+
+gpu.setVariableDependencies(velVar, [posVar, velVar]);
+gpu.setVariableDependencies(posVar, [posVar, velVar]);
+
+velVar.material.uniforms.uDelta = { value: 0.0 };
+velVar.material.uniforms.uGravitySign = { value: 1.0 };
+
+posVar.material.uniforms.uDelta = { value: 0.0 };
+
+const initError = gpu.init();
+if (initError) {
+  console.error(initError);
 }
 
-// Flip function: invert the hourglass and reset settled particles
-function flipHourglass() {
-  for (let i = 0; i < NUM_PARTICLES; i++) {
-    const ix = 3 * i;
-    positions[ix + 1] = -positions[ix + 1];
-    velocities[ix + 0] = 0.0;
-    velocities[ix + 1] = 0.0;
-    velocities[ix + 2] = 0.0;
-    settled[i] = 0;
+// Renderable particles using shader material
+const particleGeometry = new THREE.BufferGeometry();
+const aRef = new Float32Array(NUM_PARTICLES * 2);
+let ptr = 0;
+for (let y = 0; y < TEXTURE_HEIGHT; y++) {
+  for (let x = 0; x < TEXTURE_WIDTH; x++) {
+    aRef[ptr++] = (x + 0.5) / TEXTURE_WIDTH;
+    aRef[ptr++] = (y + 0.5) / TEXTURE_HEIGHT;
   }
+}
+particleGeometry.setAttribute('aRef', new THREE.BufferAttribute(aRef, 2));
+
+// A dummy position so Three.js knows it's points; values unused in shader
+const dummyPositions = new Float32Array(NUM_PARTICLES * 3);
+particleGeometry.setAttribute('position', new THREE.BufferAttribute(dummyPositions, 3));
+
+const particleVertexShader = /* glsl */`
+  uniform sampler2D tPosition;
+  uniform float uPointSize;
+  uniform float uHalfHeight;
+  attribute vec2 aRef;
+  varying float vFade;
+  void main() {
+    vec3 pos = texture2D(tPosition, aRef).xyz;
+    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+    gl_PointSize = uPointSize * (300.0 / -mvPosition.z);
+    vFade = clamp(1.0 - abs(pos.y) / uHalfHeight, 0.2, 1.0);
+  }
+`;
+
+const particleFragmentShader = /* glsl */`
+  precision mediump float;
+  uniform vec3 uColor;
+  varying float vFade;
+  void main() {
+    vec2 r = gl_PointCoord - 0.5;
+    float d = length(r);
+    float alpha = smoothstep(0.5, 0.45, d) * vFade;
+    vec3 col = uColor;
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+
+const particleMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    tPosition: { value: null },
+    uPointSize: { value: 2.2 },
+    uHalfHeight: { value: HALF_HEIGHT },
+    uColor: { value: new THREE.Color(0xf3d7a5) },
+  },
+  vertexShader: particleVertexShader,
+  fragmentShader: particleFragmentShader,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.NormalBlending,
+});
+
+const particlePoints = new THREE.Points(particleGeometry, particleMaterial);
+scene.add(particlePoints);
+
+// Flip function: invert gravity sign and add slight jitter to unstick
+let gravitySign = 1.0;
+function flipHourglass() {
+  gravitySign *= -1.0;
+  velVar.material.uniforms.uGravitySign.value = gravitySign;
 }
 
 window.addEventListener('keydown', (e) => {
@@ -304,23 +360,19 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Animate
-let accumulator = 0;
 let lastTime = performance.now() / 1000;
-
 function animate() {
   const now = performance.now() / 1000;
   let dt = now - lastTime;
   lastTime = now;
-  dt = Math.min(dt, 0.05);
+  dt = Math.min(dt, 0.033);
 
-  accumulator += dt;
-  const fixedDt = TIME_STEP;
-  while (accumulator >= fixedDt) {
-    stepPhysics(fixedDt);
-    accumulator -= fixedDt;
-  }
+  velVar.material.uniforms.uDelta.value = dt;
+  posVar.material.uniforms.uDelta.value = dt;
 
-  sandGeometry.attributes.position.needsUpdate = true;
+  gpu.compute();
+
+  particleMaterial.uniforms.tPosition.value = gpu.getCurrentRenderTarget(posVar).texture;
 
   controls.update();
   renderer.render(scene, camera);
