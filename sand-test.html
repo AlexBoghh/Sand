@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sand Particle System Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            max-width: 300px;
+            z-index: 100;
+        }
+        #controls h3 {
+            margin-top: 0;
+            color: #FFD700;
+        }
+        .control-group {
+            margin: 15px 0;
+        }
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        .control-group input[type="range"] {
+            width: 100%;
+        }
+        .control-group span {
+            display: inline-block;
+            width: 50px;
+            text-align: right;
+            color: #FFD700;
+        }
+        #stats {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 12px;
+            z-index: 100;
+        }
+        #stats div {
+            margin: 5px 0;
+        }
+        .stat-label {
+            color: #aaa;
+        }
+        .stat-value {
+            color: #FFD700;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="controls">
+            <h3>Sand Particle Controls</h3>
+            
+            <div class="control-group">
+                <label>Particle Count: <span id="particleCountValue">10000</span></label>
+                <input type="range" id="particleCount" min="1000" max="50000" value="10000" step="1000">
+            </div>
+            
+            <div class="control-group">
+                <label>Flow Rate: <span id="flowRateValue">500</span></label>
+                <input type="range" id="flowRate" min="10" max="2000" value="500" step="10">
+            </div>
+            
+            <div class="control-group">
+                <label>Particle Size: <span id="particleSizeValue">2</span></label>
+                <input type="range" id="particleSize" min="0.5" max="5" value="2" step="0.1">
+            </div>
+            
+            <div class="control-group">
+                <label>Gravity: <span id="gravityValue">9.8</span></label>
+                <input type="range" id="gravity" min="0" max="20" value="9.8" step="0.1">
+            </div>
+            
+            <div class="control-group">
+                <label>Orifice Size: <span id="orificeSizeValue">0.1</span></label>
+                <input type="range" id="orificeSize" min="0.05" max="0.3" value="0.1" step="0.01">
+            </div>
+            
+            <div class="control-group">
+                <label>Color Phase: <span id="colorPhaseValue">1</span></label>
+                <input type="range" id="colorPhase" min="1" max="21" value="1" step="1">
+            </div>
+            
+            <button id="resetBtn" style="margin-top: 10px; padding: 10px 20px; background: #FFD700; border: none; border-radius: 5px; cursor: pointer;">Reset Simulation</button>
+        </div>
+        
+        <div id="stats">
+            <div><span class="stat-label">FPS:</span> <span class="stat-value" id="fps">60</span></div>
+            <div><span class="stat-label">Active Particles:</span> <span class="stat-value" id="activeParticles">0</span></div>
+            <div><span class="stat-label">Upper Chamber:</span> <span class="stat-value" id="upperChamber">100%</span></div>
+            <div><span class="stat-label">Lower Chamber:</span> <span class="stat-value" id="lowerChamber">0%</span></div>
+            <div><span class="stat-label">Flow Status:</span> <span class="stat-value" id="flowStatus">Active</span></div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.Fog(0x764ba2, 10, 100);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, 5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.getElementById('container').appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 5);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.camera.near = 0.1;
+        directionalLight.shadow.camera.far = 50;
+        directionalLight.shadow.camera.left = -10;
+        directionalLight.shadow.camera.right = 10;
+        directionalLight.shadow.camera.top = 10;
+        directionalLight.shadow.camera.bottom = -10;
+        scene.add(directionalLight);
+
+        // Hourglass geometry (simplified)
+        const hourglassGroup = new THREE.Group();
+        
+        // Create hourglass shape with glass material
+        const glassMaterial = new THREE.MeshPhysicalMaterial({
+            color: 0xffffff,
+            metalness: 0,
+            roughness: 0,
+            transmission: 0.9,
+            thickness: 0.1,
+            transparent: true,
+            opacity: 0.3
+        });
+
+        // Upper cone (inverted)
+        const upperCone = new THREE.ConeGeometry(1, 2, 32, 1, true);
+        const upperMesh = new THREE.Mesh(upperCone, glassMaterial);
+        upperMesh.position.y = 1;
+        upperMesh.rotation.x = Math.PI;
+        hourglassGroup.add(upperMesh);
+
+        // Lower cone
+        const lowerCone = new THREE.ConeGeometry(1, 2, 32, 1, true);
+        const lowerMesh = new THREE.Mesh(lowerCone, glassMaterial);
+        lowerMesh.position.y = -1;
+        hourglassGroup.add(lowerMesh);
+
+        // Neck cylinder
+        const neckGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.2, 16);
+        const neckMesh = new THREE.Mesh(neckGeometry, glassMaterial);
+        neckMesh.position.y = 0;
+        hourglassGroup.add(neckMesh);
+
+        scene.add(hourglassGroup);
+
+        // Ground plane for lower chamber
+        const groundGeometry = new THREE.PlaneGeometry(2, 2);
+        const groundMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x333333,
+            transparent: true,
+            opacity: 0.5
+        });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // Sand Particle System
+        class SandParticleSystem {
+            constructor(particleCount = 10000) {
+                this.particleCount = particleCount;
+                this.activeParticles = 0;
+                this.particlesInUpper = particleCount;
+                this.particlesInLower = 0;
+                
+                // Physics parameters
+                this.gravity = 9.8;
+                this.orificeRadius = 0.1;
+                this.flowRate = 500; // particles per second
+                this.particleSize = 2;
+                this.damping = 0.98;
+                
+                // Color phases (1-21 days)
+                this.colorPhase = 1;
+                
+                // Initialize geometry
+                this.geometry = new THREE.BufferGeometry();
+                this.positions = new Float32Array(particleCount * 3);
+                this.velocities = new Float32Array(particleCount * 3);
+                this.colors = new Float32Array(particleCount * 3);
+                this.states = new Float32Array(particleCount); // 0=inactive, 1=falling, 2=settled
+                
+                this.initializeParticles();
+                this.createParticleSystem();
+                
+                // Flow control
+                this.lastSpawnTime = 0;
+                this.spawnInterval = 1000 / this.flowRate;
+            }
+            
+            initializeParticles() {
+                for (let i = 0; i < this.particleCount; i++) {
+                    const i3 = i * 3;
+                    
+                    // Initialize in upper chamber
+                    const angle = Math.random() * Math.PI * 2;
+                    const radius = Math.sqrt(Math.random()) * 0.9;
+                    const height = Math.random() * 1.8 + 0.1;
+                    
+                    this.positions[i3] = Math.cos(angle) * radius;
+                    this.positions[i3 + 1] = height;
+                    this.positions[i3 + 2] = Math.sin(angle) * radius;
+                    
+                    // Zero velocity
+                    this.velocities[i3] = 0;
+                    this.velocities[i3 + 1] = 0;
+                    this.velocities[i3 + 2] = 0;
+                    
+                    // Set color based on phase
+                    this.updateParticleColor(i);
+                    
+                    // Initially inactive
+                    this.states[i] = 0;
+                }
+            }
+            
+            updateParticleColor(index) {
+                const i3 = index * 3;
+                let r, g, b;
+                
+                if (this.colorPhase <= 7) {
+                    // Days 1-7: Purple void
+                    const purple = { r: 0.569, g: 0.275, b: 1.0 };
+                    const variation = Math.random() * 0.1;
+                    r = purple.r + variation;
+                    g = purple.g + variation;
+                    b = purple.b + variation;
+                } else if (this.colorPhase <= 14) {
+                    // Days 8-14: Transition
+                    const t = (this.colorPhase - 7) / 7;
+                    const purple = { r: 0.569, g: 0.275, b: 1.0 };
+                    const sand = { r: 0.96, g: 0.87, b: 0.70 };
+                    r = purple.r + (sand.r - purple.r) * t;
+                    g = purple.g + (sand.g - purple.g) * t;
+                    b = purple.b + (sand.b - purple.b) * t;
+                } else {
+                    // Days 15-21: Golden
+                    const gold = { r: 1.0, g: 0.843, b: 0.0 };
+                    const variation = Math.random() * 0.1;
+                    r = gold.r - variation * 0.2;
+                    g = gold.g - variation * 0.1;
+                    b = gold.b + variation * 0.3;
+                }
+                
+                this.colors[i3] = r;
+                this.colors[i3 + 1] = g;
+                this.colors[i3 + 2] = b;
+            }
+            
+            createParticleSystem() {
+                this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+                this.geometry.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
+                
+                // Dynamic updates
+                this.geometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
+                this.geometry.attributes.color.setUsage(THREE.DynamicDrawUsage);
+                
+                // Custom shader material
+                this.material = new THREE.ShaderMaterial({
+                    uniforms: {
+                        particleSize: { value: this.particleSize },
+                        time: { value: 0 }
+                    },
+                    vertexShader: `
+                        attribute vec3 color;
+                        varying vec3 vColor;
+                        varying float vY;
+                        uniform float particleSize;
+                        uniform float time;
+                        
+                        void main() {
+                            vColor = color;
+                            vY = position.y;
+                            
+                            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                            gl_PointSize = particleSize * (300.0 / -mvPosition.z);
+                            gl_Position = projectionMatrix * mvPosition;
+                        }
+                    `,
+                    fragmentShader: `
+                        varying vec3 vColor;
+                        varying float vY;
+                        uniform float time;
+                        
+                        void main() {
+                            vec2 coord = gl_PointCoord - 0.5;
+                            float dist = length(coord);
+                            
+                            if (dist > 0.5) discard;
+                            
+                            vec3 color = vColor;
+                            
+                            // Add shimmer effect for falling particles
+                            if (vY > -1.5 && vY < 1.5) {
+                                float shimmer = sin(time * 10.0 + vY * 5.0) * 0.1 + 0.1;
+                                color += shimmer;
+                            }
+                            
+                            // Soft edges
+                            float alpha = 1.0 - smoothstep(0.45, 0.5, dist);
+                            
+                            // Depth effect
+                            float depth = 1.0 - dist * 0.5;
+                            color *= depth;
+                            
+                            gl_FragColor = vec4(color, alpha * 0.9);
+                        }
+                    `,
+                    transparent: true,
+                    depthWrite: false,
+                    blending: THREE.AdditiveBlending,
+                    vertexColors: true
+                });
+                
+                this.particleSystem = new THREE.Points(this.geometry, this.material);
+                this.particleSystem.castShadow = true;
+                scene.add(this.particleSystem);
+            }
+            
+            spawnParticle(currentTime) {
+                if (this.activeParticles >= this.particleCount || this.particlesInUpper <= 0) return;
+                
+                if (currentTime - this.lastSpawnTime > this.spawnInterval) {
+                    // Find inactive particle
+                    for (let i = 0; i < this.particleCount; i++) {
+                        if (this.states[i] === 0) {
+                            const i3 = i * 3;
+                            
+                            // Spawn at neck with slight randomization
+                            const angle = Math.random() * Math.PI * 2;
+                            const radius = Math.random() * this.orificeRadius * 0.8;
+                            
+                            this.positions[i3] = Math.cos(angle) * radius;
+                            this.positions[i3 + 1] = 0; // Neck position
+                            this.positions[i3 + 2] = Math.sin(angle) * radius;
+                            
+                            // Initial downward velocity
+                            this.velocities[i3] = (Math.random() - 0.5) * 0.05;
+                            this.velocities[i3 + 1] = -0.1;
+                            this.velocities[i3 + 2] = (Math.random() - 0.5) * 0.05;
+                            
+                            this.states[i] = 1; // Active/falling
+                            this.activeParticles++;
+                            this.particlesInUpper--;
+                            
+                            this.lastSpawnTime = currentTime;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            updatePhysics(deltaTime) {
+                const dt = Math.min(deltaTime, 0.016); // Cap at 60fps
+                
+                for (let i = 0; i < this.particleCount; i++) {
+                    if (this.states[i] !== 1) continue; // Skip inactive/settled particles
+                    
+                    const i3 = i * 3;
+                    
+                    // Apply gravity
+                    this.velocities[i3 + 1] -= this.gravity * dt * 0.01;
+                    
+                    // Apply damping
+                    this.velocities[i3] *= this.damping;
+                    this.velocities[i3 + 1] *= this.damping;
+                    this.velocities[i3 + 2] *= this.damping;
+                    
+                    // Update position
+                    this.positions[i3] += this.velocities[i3] * dt;
+                    this.positions[i3 + 1] += this.velocities[i3 + 1] * dt;
+                    this.positions[i3 + 2] += this.velocities[i3 + 2] * dt;
+                    
+                    // Hourglass neck collision
+                    const distToCenter = Math.sqrt(
+                        this.positions[i3] * this.positions[i3] + 
+                        this.positions[i3 + 2] * this.positions[i3 + 2]
+                    );
+                    
+                    if (Math.abs(this.positions[i3 + 1]) < 0.1 && distToCenter > this.orificeRadius) {
+                        // Bounce off neck walls
+                        const normal = {
+                            x: this.positions[i3] / distToCenter,
+                            z: this.positions[i3 + 2] / distToCenter
+                        };
+                        
+                        const dot = this.velocities[i3] * normal.x + this.velocities[i3 + 2] * normal.z;
+                        this.velocities[i3] -= 2 * dot * normal.x * 0.5;
+                        this.velocities[i3 + 2] -= 2 * dot * normal.z * 0.5;
+                        
+                        // Move particle inside
+                        this.positions[i3] = normal.x * this.orificeRadius * 0.95;
+                        this.positions[i3 + 2] = normal.z * this.orificeRadius * 0.95;
+                    }
+                    
+                    // Lower chamber collision (pile formation)
+                    if (this.positions[i3 + 1] < -1.95) {
+                        // Calculate pile height based on distance from center
+                        const pileRadius = Math.min(distToCenter, 0.8);
+                        const pileHeight = -2 + (0.8 - pileRadius) * 0.3; // Angle of repose
+                        
+                        if (this.positions[i3 + 1] < pileHeight) {
+                            this.positions[i3 + 1] = pileHeight;
+                            this.velocities[i3 + 1] = 0;
+                            this.velocities[i3] *= 0.1;
+                            this.velocities[i3 + 2] *= 0.1;
+                            
+                            // Mark as settled if velocity is low
+                            const speed = Math.sqrt(
+                                this.velocities[i3] * this.velocities[i3] +
+                                this.velocities[i3 + 1] * this.velocities[i3 + 1] +
+                                this.velocities[i3 + 2] * this.velocities[i3 + 2]
+                            );
+                            
+                            if (speed < 0.01) {
+                                this.states[i] = 2; // Settled
+                                this.particlesInLower++;
+                            }
+                        }
+                    }
+                }
+                
+                // Update geometry
+                this.geometry.attributes.position.needsUpdate = true;
+            }
+            
+            update(time, deltaTime) {
+                this.material.uniforms.time.value = time;
+                this.spawnParticle(time * 1000);
+                this.updatePhysics(deltaTime);
+            }
+            
+            setColorPhase(phase) {
+                this.colorPhase = phase;
+                for (let i = 0; i < this.particleCount; i++) {
+                    this.updateParticleColor(i);
+                }
+                this.geometry.attributes.color.needsUpdate = true;
+            }
+            
+            reset() {
+                this.activeParticles = 0;
+                this.particlesInUpper = this.particleCount;
+                this.particlesInLower = 0;
+                this.initializeParticles();
+                this.geometry.attributes.position.needsUpdate = true;
+                this.geometry.attributes.color.needsUpdate = true;
+            }
+        }
+
+        // Initialize sand system
+        let sandSystem = new SandParticleSystem(10000);
+
+        // Stats tracking
+        const stats = {
+            frameCount: 0,
+            lastTime: performance.now(),
+            fps: 60
+        };
+
+        // Animation loop
+        const clock = new THREE.Clock();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const deltaTime = clock.getDelta();
+            const elapsedTime = clock.getElapsedTime();
+            
+            // Update controls
+            controls.update();
+            
+            // Update sand simulation
+            sandSystem.update(elapsedTime, deltaTime);
+            
+            // Update FPS
+            stats.frameCount++;
+            const currentTime = performance.now();
+            if (currentTime - stats.lastTime > 1000) {
+                stats.fps = Math.round(stats.frameCount * 1000 / (currentTime - stats.lastTime));
+                document.getElementById('fps').textContent = stats.fps;
+                stats.frameCount = 0;
+                stats.lastTime = currentTime;
+            }
+            
+            // Update stats display
+            document.getElementById('activeParticles').textContent = sandSystem.activeParticles;
+            document.getElementById('upperChamber').textContent = 
+                Math.round((sandSystem.particlesInUpper / sandSystem.particleCount) * 100) + '%';
+            document.getElementById('lowerChamber').textContent = 
+                Math.round((sandSystem.particlesInLower / sandSystem.particleCount) * 100) + '%';
+            document.getElementById('flowStatus').textContent = 
+                sandSystem.particlesInUpper > 0 ? 'Active' : 'Complete';
+            
+            // Render
+            renderer.render(scene, camera);
+        }
+
+        // Start animation
+        animate();
+
+        // Control handlers
+        document.getElementById('particleCount').addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            document.getElementById('particleCountValue').textContent = value;
+            
+            // Recreate sand system with new count
+            scene.remove(sandSystem.particleSystem);
+            sandSystem = new SandParticleSystem(value);
+        });
+
+        document.getElementById('flowRate').addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            document.getElementById('flowRateValue').textContent = value;
+            sandSystem.flowRate = value;
+            sandSystem.spawnInterval = 1000 / value;
+        });
+
+        document.getElementById('particleSize').addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            document.getElementById('particleSizeValue').textContent = value;
+            sandSystem.particleSize = value;
+            sandSystem.material.uniforms.particleSize.value = value;
+        });
+
+        document.getElementById('gravity').addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            document.getElementById('gravityValue').textContent = value;
+            sandSystem.gravity = value;
+        });
+
+        document.getElementById('orificeSize').addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            document.getElementById('orificeSizeValue').textContent = value;
+            sandSystem.orificeRadius = value;
+            
+            // Update neck mesh
+            scene.remove(hourglassGroup);
+            hourglassGroup = new THREE.Group();
+            
+            const upperMesh2 = new THREE.Mesh(upperCone, glassMaterial);
+            upperMesh2.position.y = 1;
+            upperMesh2.rotation.x = Math.PI;
+            hourglassGroup.add(upperMesh2);
+            
+            const lowerMesh2 = new THREE.Mesh(lowerCone, glassMaterial);
+            lowerMesh2.position.y = -1;
+            hourglassGroup.add(lowerMesh2);
+            
+            const neckGeometry2 = new THREE.CylinderGeometry(value, value, 0.2, 16);
+            const neckMesh2 = new THREE.Mesh(neckGeometry2, glassMaterial);
+            neckMesh2.position.y = 0;
+            hourglassGroup.add(neckMesh2);
+            
+            scene.add(hourglassGroup);
+        });
+
+        document.getElementById('colorPhase').addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            document.getElementById('colorPhaseValue').textContent = value;
+            sandSystem.setColorPhase(value);
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            sandSystem.reset();
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
